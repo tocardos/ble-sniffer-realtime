@@ -164,6 +164,7 @@ int pcapmerger::addpacket(struct timeval *ts, int channel,
 		tail1->setnext(newpacket);
 		tail1 = newpacket;
 	}
+	return 0;
 }
 
 /*
