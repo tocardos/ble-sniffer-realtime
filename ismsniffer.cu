@@ -41,7 +41,13 @@
 #include "bleprocessor.h"
 #include "pcapsaver.h"
 
-static const size_t num_rep = 20000;
+#define SAMP_RATE 16e6
+//static const size_t num_rep = 20000;
+//static const size_t num_rep = 4000; // working fine with 16MHz
+//static const size_t num_rep = 9000; // working fine with 18MHz
+static const size_t num_rep = SAMP_RATE/8e3;
+
+
 static const double timeout = 3.0;
 
 typedef std::complex<double> iqsamp_t;
@@ -190,7 +196,30 @@ void register_new_packets(uint8_t* bits,
                     swap_nbytes(header, header_size);
                     payload_size = header[1];
 
-                    if (payload_size != 0) continue;
+                    if (payload_size != 0) 
+                    {
+						//#if 0
+						// added vde as test
+						size_t pdu_size = header_size + payload_size;
+						for (int byte = 0; byte < pdu_size+3; ++byte)
+							for (int b = 0; b < 8; ++b)
+								pdu[byte] |=(bits[offset + (byte*8+b)*srate] & 0x1) << (7-b);
+						ble_dewhiten(pdu, blechan, pdu_size+3);
+						swap_nbytes(pdu, pdu_size);
+        
+						uint32_t timenow_us = (num_samps_rx + j) / srate;
+						uint32_t timeusec = ((uint32_t) timenow_us) % 1000000;
+						uint32_t timesec = ((uint32_t) timenow_us - timeusec) / 1000000;
+						struct timeval ts = {timesec, timeusec};
+						pc.addpacket(&ts, blechan, aa, pdu_size+3, pdu, 0);
+						// DEBUG: Print packet info
+						std::cout << boost::format("%u.%06u payload not empty: Ch:%02d AA:%08X Payload:%d bytes") 
+							% timesec % timeusec % blechan % aa % payload_size << std::endl;
+						// end of vde mod
+						//#endif
+
+						continue;
+					}
 
                     // Extract BLE frame without checking CRC validity again.
                     size_t pdu_size = header_size;
@@ -266,7 +295,7 @@ int UHD_SAFE_MAIN(int argc, char *argv[])
     std::cout << boost::format("\nDetected %u mboards\n") % num_mboards
               << std::endl;
 
-    const double sampling_rate = 40e6;
+    const double sampling_rate = SAMP_RATE;
 
     // SDR front-end configuration.
     usrp.set_chan(channel_string);
