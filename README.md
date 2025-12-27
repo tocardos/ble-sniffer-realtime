@@ -6,6 +6,8 @@ The system implemented here is described in [this paper](https://ieeexplore.ieee
 ## Compilation instructions
 `cd` into this repository and run:
 ```
+    $ sudo apt-get install libpcap-dev
+	  $ sudo apt-get install gcc-11 g++-11
     $ mkdir build
     $ cd build
     $ cmake ..
