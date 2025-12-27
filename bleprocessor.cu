@@ -309,6 +309,10 @@ __global__
 void filter(cuDoubleComplex* x, cuDoubleComplex* s, size_t nsamps)
 {
     unsigned int i = (blockIdx.x * blockDim.x) + threadIdx.x;
+    // added
+    //size_t output_len = nsamps/DECFACTOR;
+
+
     if (i < nsamps/DECFACTOR - FILTER_TAP_NUM+1) {
         size_t j = (FILTER_TAP_NUM - 1) + i * DECFACTOR;
         for (unsigned int k = 0; k < POLY_LEN; ++k) {

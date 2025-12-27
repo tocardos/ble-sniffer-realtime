@@ -4,8 +4,13 @@
 #
 # SPDX-License-Identifier: GPL-3.0
 #
+project(BLESlurt)
 
 cmake_minimum_required(VERSION 2.8)
+
+set(CMAKE_C_COMPILER "/usr/bin/gcc-11")
+set(CMAKE_CXX_COMPILER "/usr/bin/g++-11")
+set(CUDA_HOST_COMPILER "/usr/bin/g++-11")
 
 ### Set up build environment ##################################################
 # Choose a static or shared-library build (shared is default, and static will

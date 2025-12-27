@@ -84,7 +84,7 @@ UsrpCluster::UsrpCluster(std::string usrp_args)
         usrp.push_back(uhd::usrp::multi_usrp::make(mboard_args));
 
     // Set external clock and time sources for all motherboards
-    const std::string ref = "external";
+    const std::string ref = "internal";
     for (auto& mboard: usrp) {
         mboard->set_clock_source(ref);
         mboard->set_time_source(ref);
@@ -113,7 +113,7 @@ UsrpCluster::UsrpCluster(std::string usrp_args, std::string subdev)
     }
 
     // Set external clock and time sources for all motherboards
-    const std::string ref = "external";
+    const std::string ref = "internal";
     for (auto& mboard: usrp) {
         mboard->set_clock_source(ref);
         mboard->set_time_source(ref);
@@ -143,7 +143,7 @@ UsrpCluster::UsrpCluster(std::string usrp_args, std::string subdev,
     }
 
     // Set external clock and time sources for all motherboards
-    const std::string ref = "external";
+    const std::string ref = "internal";
     for (auto& mboard: usrp) {
         mboard->set_clock_source(ref);
         mboard->set_time_source(ref);

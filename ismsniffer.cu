@@ -34,19 +34,33 @@
 #include <uhd/device.hpp>
 #include <uhd/exception.hpp>
 #include <uhd/utils/safe_main.hpp>
-#include <uhd/utils/thread_priority.hpp>
+#include <uhd/utils/thread.hpp>
 
 #include "usrpcluster.hpp"
 #include "doublebuffer.hpp"
 #include "bleprocessor.h"
 #include "pcapsaver.h"
 
-#define SAMP_RATE 16e6
-//static const size_t num_rep = 20000;
+//#include <thread>
+#include <atomic>
+#include <queue>
+#include <mutex>
+#include <condition_variable>
+
+#define SAMP_RATE 52e6
+static const size_t num_rep = 26000;
 //static const size_t num_rep = 4000; // working fine with 16MHz
 //static const size_t num_rep = 9000; // working fine with 18MHz
-static const size_t num_rep = SAMP_RATE/8e3;
+//static const size_t num_rep = SAMP_RATE/8e3;
 
+struct PacketWork {
+    uint8_t* bits;
+    size_t num_samps_rx;
+};
+std::queue<PacketWork> work_queue;
+std::mutex work_mutex;
+std::condition_variable work_cv;
+std::atomic<bool> worker_running{true};
 
 static const double timeout = 3.0;
 
@@ -57,6 +71,9 @@ namespace po = boost::program_options;
 
 volatile bool stopsig = false;
 void sigint_handler(int) {stopsig = true;}
+
+
+
 
 void streaming(uhd::rx_streamer::sptr rxstream,
                DoubleBuffer<iqsamp_t*> *const buf_ctrl,
@@ -79,9 +96,13 @@ void streaming(uhd::rx_streamer::sptr rxstream,
 
         // Release buffer and check for overflows
         buf_ctrl->end_writing();
-        if (buf_ptr == old_buf_ptr)
+        /*
+        if (buf_ptr == old_buf_ptr){
             std::cerr << "An overflow has occurred" << std::endl;
-
+        }else {
+            std::cout << "Received " << num_rx_samps << " samples" << std::endl;
+        }
+        */
         old_buf_ptr = buf_ptr;
         
         // Throw exception if errors occur
@@ -157,6 +178,8 @@ void register_new_packets(uint8_t* bits,
                     uint32_t timeusec = ((uint32_t) timenow_us) % 1000000;
                     uint32_t timesec = ((uint32_t) timenow_us - timeusec) / 1000000;
                     struct timeval ts = {timesec, timeusec};
+                    //std::cout << boost::format("%u.%06u broadcast: Ch:%02d AA:%08X Payload:%d bytes") 
+					//		% timesec % timeusec % blechan % aa % payload_size << std::endl;
                     pc.addpacket(&ts, blechan, aa, pdu_size+3, pdu, 0);
                     
                     // Ensure duplicate packets are discarded
@@ -235,6 +258,8 @@ void register_new_packets(uint8_t* bits,
                     uint32_t timesec = ((uint32_t) timenow_us - timeusec) / 1000000;
                     std::cout << boost::format("%u%06u NewAA: %08X") % timesec % timeusec % aa;
                     std::cout << std::endl;
+                    struct timeval ts = {timesec, timeusec};
+                    pc.addpacket(&ts, blechan, aa, pdu_size+3, pdu, 0);
 
                     // Ensure duplicate packets are discarded
                     for (int kk = 0; kk < srate; kk++) bits[i+1] &= 0x1;
@@ -244,7 +269,38 @@ void register_new_packets(uint8_t* bits,
     }
 }
 
+void packet_worker_thread(pcapmerger& pc,
+                          size_t nsamps_per_mboard,
+                          size_t samps_per_chan,
+                          size_t num_mboards,
+                          size_t* pktcount)
+{
+    while (worker_running) {
+        PacketWork work;
 
+        {
+            std::unique_lock<std::mutex> lock(work_mutex);
+            work_cv.wait(lock, [] {
+                return !work_queue.empty() || !worker_running;
+            });
+
+            if (!worker_running) break;
+
+            work = work_queue.front();
+            work_queue.pop();
+        }
+
+        register_new_packets(
+            work.bits,
+            pc,
+            nsamps_per_mboard,
+            samps_per_chan,
+            num_mboards,
+            work.num_samps_rx,
+            pktcount
+        );
+    }
+}
 int UHD_SAFE_MAIN(int argc, char *argv[])
 {
     // Set thread priority and escape signal.
@@ -321,7 +377,7 @@ int UHD_SAFE_MAIN(int argc, char *argv[])
             << std::endl;
         return ~0;
     }
-
+    
     // Allocate data buffers
     const size_t nsamps_per_mboard = num_rep * usrp.get_max_num_samps();
     const size_t nsamps_overall = nsamps_per_mboard * num_mboards;
@@ -380,7 +436,7 @@ int UHD_SAFE_MAIN(int argc, char *argv[])
 
     const size_t samps_per_chan = nsamps_per_mboard / DECFACTOR;
 
-    size_t pktcount[num_mboards*DECFACTOR] = {0};
+    std::vector<size_t> pktcount(num_mboards * DECFACTOR, 0);
 
     pcapmerger pc;
     int err = pc.create(fname.c_str());
@@ -388,7 +444,15 @@ int UHD_SAFE_MAIN(int argc, char *argv[])
         std::cerr << "Failed to create pcap saver" << std::endl;
         stopsig = true;
     }
-
+    // allocate packet worker thread
+    std::thread pkt_thread(
+        packet_worker_thread,
+        std::ref(pc),
+        nsamps_per_mboard,
+        samps_per_chan,
+        num_mboards,
+        pktcount.data()
+    );
     size_t num_samps_rx = 0;
 
     while (stopsig == false) {
@@ -410,9 +474,18 @@ int UHD_SAFE_MAIN(int argc, char *argv[])
         chan_processing(d_iqbuffer, d_binbuffer, nsamps_per_mboard, num_mboards);
 
         // Save new packets to file.
-        register_new_packets(h_binbuffer, pc, nsamps_per_mboard,
-            samps_per_chan, num_mboards, num_samps_rx, pktcount);
-        
+        //register_new_packets(h_binbuffer, pc, nsamps_per_mboard,
+        //    samps_per_chan, num_mboards, num_samps_rx, pktcount.data());
+        {
+            std::lock_guard<std::mutex> lock(work_mutex);
+
+        // IMPORTANT: h_binbuffer must remain valid!
+        work_queue.push(PacketWork{
+            h_binbuffer,
+            num_samps_rx
+        });
+        }
+        work_cv.notify_one();
         // Display how many packets have been decoded.
         if (debug) {
             for (int k = 0; k < num_mboards*DECFACTOR; k++) 
@@ -436,6 +509,10 @@ int UHD_SAFE_MAIN(int argc, char *argv[])
     pc.flush();
     pc.finalise();
 
+    worker_running = false;
+    work_cv.notify_all();
+    pkt_thread.join();
+    
     // Free allocated memory.
     cudaFreeHost(h_iqbuffer_a);
     cudaFreeHost(h_iqbuffer_b);
