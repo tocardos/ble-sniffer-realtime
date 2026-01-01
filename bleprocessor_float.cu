@@ -14,6 +14,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 //
+// MODIFIED: Converted to single precision for ~2x speedup
 
 #include <iostream>
 #include <complex>
@@ -26,24 +27,24 @@
 #include <cuda_runtime_api.h>
 #include <cuComplex.h>
 
-#include "bleprocessor.h"
+#include "bleprocessor_float.h"
 #include "pcapsaver.h"
 
-typedef std::complex<double> iqsamp_t;
+typedef std::complex<float> iqsamp_t;  // Changed from double to float
 
 // TODO: rm global vars and create a class for the BLE processor.
 
 // Store polyphase filter in constant memory for faster access
-__constant__ double poly[DECFACTOR][POLY_LEN];
-__constant__ cuDoubleComplex twiddle[DECFACTOR][DECFACTOR];
+__constant__ float poly[DECFACTOR][POLY_LEN];  // Changed from double
+__constant__ cuFloatComplex twiddle[DECFACTOR][DECFACTOR];  // Changed from cuDoubleComplex
 
 #define MAX_NUM_CONN 128
 uint32_t* conn_list;
 
-static const std::complex<double> i_unit(0.0, 1.0);
+static const std::complex<float> i_unit(0.0f, 1.0f);  // Changed to float
 
-static cuDoubleComplex* sigbuf;
-static cuDoubleComplex* chanbuf;
+static cuFloatComplex* sigbuf;   // Changed from cuDoubleComplex
+static cuFloatComplex* chanbuf;  // Changed from cuDoubleComplex
 
 __device__ __host__
 size_t get_aa_idx(size_t idx)
@@ -154,15 +155,15 @@ uint32_t compute_crc(const uint8_t* data, size_t nbytes, uint32_t init_val)
 
 
 __global__
-void demod(cuDoubleComplex* samplebuf, uint8_t* binbuf, size_t nsamps)
+void demod(cuFloatComplex* samplebuf, uint8_t* binbuf, size_t nsamps)  // Changed parameter type
 {
     unsigned int i = (blockIdx.x * blockDim.x) + threadIdx.x;
     if (i == 0) {
         binbuf[i] = 0;
     } else if (i < nsamps) {
-        double phasediff_sign = cuCimag(samplebuf[i]) * cuCreal(samplebuf[i-1])
-                              - cuCreal(samplebuf[i]) * cuCimag(samplebuf[i-1]);
-        binbuf[i] = (phasediff_sign > 0.0) ? 0x1 : 0x0;
+        float phasediff_sign = cuCimagf(samplebuf[i]) * cuCrealf(samplebuf[i-1])  // Changed to float functions
+                              - cuCrealf(samplebuf[i]) * cuCimagf(samplebuf[i-1]);
+        binbuf[i] = (phasediff_sign > 0.0f) ? 0x1 : 0x0;  // Changed to 0.0f
     }
 }
 
@@ -306,27 +307,24 @@ void detect_ble_packets(uint8_t* bits, size_t buflen, size_t blechan, uint32_t* 
 
 
 __global__
-void filter(cuDoubleComplex* x, cuDoubleComplex* s, size_t nsamps)
+void filter(cuFloatComplex* x, cuFloatComplex* s, size_t nsamps)  // Changed parameter type
 {
     unsigned int i = (blockIdx.x * blockDim.x) + threadIdx.x;
-    // added
-    //size_t output_len = nsamps/DECFACTOR;
-
 
     if (i < nsamps/DECFACTOR - FILTER_TAP_NUM+1) {
         size_t j = (FILTER_TAP_NUM - 1) + i * DECFACTOR;
         for (unsigned int k = 0; k < POLY_LEN; ++k) {
             size_t idx = j/DECFACTOR;
             // First filter component
-            cuDoubleComplex tap = make_cuDoubleComplex(poly[0][k]/(double)POLY_LEN, 0);
-            cuDoubleComplex inc = cuCmul(x[j-k*DECFACTOR], tap);
-            s[idx-1] = cuCadd(s[idx-1], inc);
+            cuFloatComplex tap = make_cuFloatComplex(poly[0][k]/(float)POLY_LEN, 0.0f);  // Changed
+            cuFloatComplex inc = cuCmulf(x[j-k*DECFACTOR], tap);  // Changed to cuCmulf
+            s[idx-1] = cuCaddf(s[idx-1], inc);  // Changed to cuCaddf
             // Other filter components
             for (unsigned int c = 1; c < DECFACTOR; ++c) {
-                tap = make_cuDoubleComplex(poly[c][k]/((double)POLY_LEN-1), 0);
-                inc = cuCmul(x[j-k*DECFACTOR+(DECFACTOR-c)], tap);
+                tap = make_cuFloatComplex(poly[c][k]/((float)POLY_LEN-1), 0.0f);  // Changed
+                inc = cuCmulf(x[j-k*DECFACTOR+(DECFACTOR-c)], tap);  // Changed to cuCmulf
                 size_t newidx = c*nsamps/DECFACTOR + idx;
-                s[newidx] = cuCadd(s[newidx], inc);
+                s[newidx] = cuCaddf(s[newidx], inc);  // Changed to cuCaddf
             }
         }
     }
@@ -334,7 +332,7 @@ void filter(cuDoubleComplex* x, cuDoubleComplex* s, size_t nsamps)
 
 
 __global__
-void dft(cuDoubleComplex* s, cuDoubleComplex* y, size_t nsamps)
+void dft(cuFloatComplex* s, cuFloatComplex* y, size_t nsamps)  // Changed parameter type
 {
     unsigned int i = (blockIdx.x * blockDim.x) + threadIdx.x;
     size_t samps_per_chan = nsamps/DECFACTOR;
@@ -342,8 +340,8 @@ void dft(cuDoubleComplex* s, cuDoubleComplex* y, size_t nsamps)
         for (unsigned int ch = 0; ch < DECFACTOR; ++ch)
             for (unsigned int k = 0; k < DECFACTOR; ++k) 
                 y[ch*samps_per_chan+i] =
-                    cuCadd(y[ch*samps_per_chan+i],
-                        cuCmul(s[k*samps_per_chan+i], twiddle[ch][k]));
+                    cuCaddf(y[ch*samps_per_chan+i],  // Changed to cuCaddf
+                        cuCmulf(s[k*samps_per_chan+i], twiddle[ch][k]));  // Changed to cuCmulf
     }
 }
 
@@ -351,28 +349,28 @@ void dft(cuDoubleComplex* s, cuDoubleComplex* y, size_t nsamps)
 void init_decoder(size_t data_buffer_size)
 {
     // Initialize polyphase filter and copy to Constant Memory
-    double h_filter[DECFACTOR][POLY_LEN];
+    float h_filter[DECFACTOR][POLY_LEN];  // Changed from double
     for (size_t i = 0; i < DECFACTOR * POLY_LEN; ++i) {
         size_t r = i%DECFACTOR;
         size_t c = i/DECFACTOR;
-        h_filter[r][c] = (i < FILTER_TAP_NUM) ? filter_taps[i] : 0.0;
+        h_filter[r][c] = (i < FILTER_TAP_NUM) ? (float)filter_taps[i] : 0.0f;  // Cast to float
     }
-    cudaMemcpyToSymbol(poly, h_filter, DECFACTOR * POLY_LEN * sizeof(double));
+    cudaMemcpyToSymbol(poly, h_filter, DECFACTOR * POLY_LEN * sizeof(float));  // Changed size
 
     // Initalize twiddle matrix
-    std::complex<double> h_twiddle[DECFACTOR][DECFACTOR];
+    std::complex<float> h_twiddle[DECFACTOR][DECFACTOR];  // Changed from double
     for (size_t row = 0; row < DECFACTOR; ++row) {
         for (size_t col = 0; col < DECFACTOR; ++col) {
-            std::complex<double> tmp =
-                exp(i_unit * 2.0 * M_PI * ((double) col*row) / (double)DECFACTOR);
+            std::complex<float> tmp =  // Changed from double
+                exp(i_unit * 2.0f * (float)M_PI * ((float)col*row) / (float)DECFACTOR);  // Changed to float
             h_twiddle[row][col] = tmp;
         }
     }
-    cudaMemcpyToSymbol(twiddle, h_twiddle, DECFACTOR * DECFACTOR * sizeof(cuDoubleComplex));
+    cudaMemcpyToSymbol(twiddle, h_twiddle, DECFACTOR * DECFACTOR * sizeof(cuFloatComplex));  // Changed size
 
     // Allocate auxiliary data buffers
-    cudaMalloc((void**)&sigbuf,  data_buffer_size * sizeof(cuDoubleComplex));
-    cudaMalloc((void**)&chanbuf, data_buffer_size * sizeof(cuDoubleComplex));
+    cudaMalloc((void**)&sigbuf,  data_buffer_size * sizeof(cuFloatComplex));  // Changed size
+    cudaMalloc((void**)&chanbuf, data_buffer_size * sizeof(cuFloatComplex));  // Changed size
 
     // Allocate connection list: first half is aa, second half is crc + 1 element idx
     cudaMalloc((void**)&conn_list, (1 + 2 * MAX_NUM_CONN) * sizeof(uint32_t));
@@ -421,12 +419,12 @@ void clean_aa_table(uint32_t* conn_list)
 
 void iq_processing(iqsamp_t* samplebuf, uint8_t* binbuf, size_t num_samps, size_t num_mboards)
 {
-    // Cast IQ samples to 'cuDoubleComplex' array for CUDA C compatibility
-    cuDoubleComplex* cbuf = (cuDoubleComplex*) samplebuf;
+    // Cast IQ samples to 'cuFloatComplex' array for CUDA C compatibility
+    cuFloatComplex* cbuf = (cuFloatComplex*) samplebuf;  // Changed cast
 
     // Reset buffers
-    cudaMemset(sigbuf, 0, num_mboards * num_samps * sizeof(cuDoubleComplex));
-    cudaMemset(chanbuf, 0, num_mboards * num_samps * sizeof(cuDoubleComplex));
+    cudaMemset(sigbuf, 0, num_mboards * num_samps * sizeof(cuFloatComplex));  // Changed size
+    cudaMemset(chanbuf, 0, num_mboards * num_samps * sizeof(cuFloatComplex));  // Changed size
 
     size_t nthreads = 256;
     size_t nblocks = (num_samps + nthreads - 1) / nthreads;
@@ -441,88 +439,8 @@ void iq_processing(iqsamp_t* samplebuf, uint8_t* binbuf, size_t num_samps, size_
         dft<<<nblocks, nthreads>>>(sigbuf+b*num_samps, chanbuf+b*num_samps, num_samps);
     }
 }
-/*
-// Optimized version using CUDA streams for parallel execution
-
+  
 void chan_processing(iqsamp_t* samplebuf, uint8_t* binbuf, size_t num_samps, size_t num_mboards)
-{
-    // Reset buffers
-    cudaMemset(binbuf, 0, num_mboards * num_samps * sizeof(uint8_t));
-
-    const size_t samps_per_chan = num_samps/DECFACTOR;
-
-    size_t nthreads = 512;
-    size_t nblocks = (num_samps + nthreads - 1) / nthreads;
-
-    clean_aa_table<<<1,1>>>(conn_list);
-    
-    // Create streams for parallel kernel execution
-    static cudaStream_t streams[DECFACTOR];
-    static bool streams_initialized = false;
-    if (!streams_initialized) {
-        for (int i = 0; i < DECFACTOR; i++) {
-            cudaStreamCreate(&streams[i]);
-        }
-        streams_initialized = true;
-    }
-
-    for (size_t b = 0; b < num_mboards; ++b) {
-        const uint32_t central_freq = (uint32_t) (usrp_tune_freqs[b]/1e6);
-
-        // Launch demod kernels in parallel across all channels
-        for (size_t ch = 0; ch < DECFACTOR; ch++) {
-            demod<<<nblocks, nthreads, 0, streams[ch]>>>(
-                chanbuf + b*num_samps + ch*samps_per_chan,
-                binbuf + b*num_samps + ch*samps_per_chan,
-                samps_per_chan);
-        }
-
-        // Sync all demod streams before packet detection
-        for (int ch = 0; ch < DECFACTOR; ch++) {
-            cudaStreamSynchronize(streams[ch]);
-        }
-
-        // Process Adv Channels in parallel (discover new connections)
-        for (int ch = 0; ch < DECFACTOR; ch++) {
-            int32_t delta_freq = (ch <= DECFACTOR/2) ? ch*2 : (-DECFACTOR + ch)*2;
-            uint32_t blechan = freq2chan(central_freq + delta_freq);
-
-            if (is_adv_chan(blechan)) {
-                detect_ble_packets<<<nblocks, nthreads, 0, streams[ch]>>>(
-                    binbuf + b*num_samps + ch*samps_per_chan,
-                    samps_per_chan, blechan, conn_list, LE1M_SRATE);
-            }
-        }
-
-        // Sync adv channel processing
-        for (int ch = 0; ch < DECFACTOR; ch++) {
-            cudaStreamSynchronize(streams[ch]);
-        }
-
-        // Detect packets on all other channels in parallel
-        for (int ch = 0; ch < DECFACTOR; ch++) {
-            int32_t delta_freq = (ch <= DECFACTOR/2) ? ch*2 : (-DECFACTOR + ch)*2;
-            uint32_t blechan = freq2chan(central_freq + delta_freq);
-
-            if (!is_adv_chan(blechan)) {
-                // LE 1M - launch both in same stream
-                detect_ble_packets<<<nblocks, nthreads, 0, streams[ch]>>>(
-                    binbuf + b*num_samps + ch*samps_per_chan,
-                    samps_per_chan, blechan, conn_list, LE1M_SRATE);
-                    
-                bfscan_channel<<<nblocks, nthreads, 0, streams[ch]>>>(
-                    binbuf + b*num_samps + ch*samps_per_chan,
-                    samps_per_chan, blechan, conn_list, LE1M_SRATE);
-            }
-        }
-        
-        // Final sync
-        cudaDeviceSynchronize();
-    }
-}
-*/
-  // original
-  void chan_processing(iqsamp_t* samplebuf, uint8_t* binbuf, size_t num_samps, size_t num_mboards)
 {
     // Reset buffers
     cudaMemset(binbuf, 0, num_mboards * num_samps * sizeof(uint8_t));
@@ -576,4 +494,3 @@ void chan_processing(iqsamp_t* samplebuf, uint8_t* binbuf, size_t num_samps, siz
         }
     }
 }
-  

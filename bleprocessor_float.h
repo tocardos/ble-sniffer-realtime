@@ -1,42 +1,39 @@
-//
-// Copyright 2020 Marco Cominelli
-//
-// This program is free software: you can redistribute it and/or modify
-// it under the terms of the GNU General Public License as published by
-// the Free Software Foundation, either version 3 of the License, or
-// (at your option) any later version.
-//
-// This program is distributed in the hope that it will be useful,
-// but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-// GNU General Public License for more details.
-//
-// You should have received a copy of the GNU General Public License
-// along with this program.  If not, see <http://www.gnu.org/licenses/>.
-//
+// If you have a bleprocessor.h header file, you may need to update function signatures
+// Here are the likely changes needed:
 
-#ifndef BLE_PROCESSOR
-#define BLE_PROCESSOR
+#ifndef BLEPROCESSOR_H
+#define BLEPROCESSOR_H
+
+#include <complex>
+#include <cstdint>
+
+// Change this if it's defined in the header
+typedef std::complex<float> iqsamp_t;  // Changed from double to float
+
+// Constants (unchanged)
 
 #define LE1M_SRATE 2
 #define LE2M_SRATE 1
 
-#include <vector>
-#include <complex>
-
-typedef std::complex<double> iqsamp_t;
-//typedef std::complex<float> iqsamp_t;  // Single precision
-
-const std::vector<double> usrp_tune_freqs = {2420e6, 2462e6};
-
-// Allocate and de-allocate decoder data.
-void init_decoder(size_t databuf_size);
+#define SAMP_RATE 40000000UL
+//#define SAMP_RATE 32000000UL 
+// USRP frequencies (unchanged)
+//extern const double usrp_tune_freqs[];
+// tune freqs need to be adaptaed based on  sampling frequency if higher than 20MHz...
+#if (SAMP_RATE==40000000UL)
+  const std::vector<double> usrp_tune_freqs = {2420e6, 2462e6};
+#elif (SAMP_RATE==32000000UL)
+  const std::vector<double> usrp_tune_freqs = {2416e6, 2462e6};
+#endif
+// Function declarations (signatures may need updating if they explicitly use types)
+void init_decoder(size_t data_buffer_size);
 void free_decoder();
 
-void ble_processing(iqsamp_t* samplebuf, uint8_t* binbuf, size_t nsamps, size_t num_mboards);
-void iq_processing(iqsamp_t* samplebuf, uint8_t* binbuf, size_t nsamps, size_t num_mboards);
-void chan_processing(iqsamp_t* samplebuf, uint8_t* binbuf, size_t nsamps, size_t num_mboards);
-//void old_proc(iqsamp_t* samplebuf, uint8_t* binbuf, size_t nsamps, size_t num_mboards);
+// These function signatures should use iqsamp_t, so they auto-update
+void iq_processing(iqsamp_t* samplebuf, uint8_t* binbuf, size_t num_samps, size_t num_mboards);
+void chan_processing(iqsamp_t* samplebuf, uint8_t* binbuf, size_t num_samps, size_t num_mboards);
+
+uint32_t freq2chan(uint32_t freq);
 
 // Useful auxiliary functions.
 __host__ __device__ void swap_byte(uint8_t* data);
@@ -45,17 +42,8 @@ __host__ __device__ void ble_dewhiten(uint8_t* data, uint32_t ble_channel, uint3
 uint32_t freq2chan(uint32_t freq);
 
 void offlineproc(void);
-
-/* playing along with different filter length and poly_length
- i managed to get 52MHz sampling rate, increase in overflow, but still providing interesting results*/
-
-/*
-FIR filter designed with http://t-filter.appspot.com
-sampling frequency: 40 MHz
-0 Hz - 1.1 MHz: gain = 1, ripple < 5 dB
-1.8 MHz - 20 MHz: gain = 0, attenuation = -40 dB
-*/
-#ifdef NOTHING
+#if (SAMP_RATE==40000000UL)
+//#ifdef NOTHING
 #define DECFACTOR 20
 #define POLY_LEN 5
 #define FILTER_TAP_NUM 81
@@ -88,13 +76,12 @@ static double filter_taps[FILTER_TAP_NUM] = {
     0.0003445822832488563, 0.0007904292201485264, 0.0010575602093139385,
     0.0011703374498432562, 0.00116263219316108, 0.003989802934893269
 };
-#endif 
 
-#ifdef NOTHING
+//#endif // nothing 
 // for 40MHz with shorter filter ( 80 taps )
 // works with poly_len at 4 
 
-
+#ifdef NOTHING
 #define DECFACTOR 20
 #define POLY_LEN 4
 #define FILTER_TAP_NUM 80
@@ -151,8 +138,8 @@ static double filter_taps[FILTER_TAP_NUM] = {
   0.0009679619284734169,  0.004017345370761985
 };
 
-#endif
-
+#endif // nothing
+#elif (SAMP_RATE==32000000UL)
 /*
 
 FIR filter designed with
@@ -199,4 +186,5 @@ static double filter_taps[FILTER_TAP_NUM] = {
   0.00046092484970719467,  0.0009600530262111564,  0.001142903744049493,
   0.0041423494754151005
 };
-#endif //BLE_PROCESSOR
+#endif
+#endif // BLEPROCESSOR_H

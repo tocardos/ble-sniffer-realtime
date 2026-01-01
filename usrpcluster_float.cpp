@@ -38,7 +38,7 @@
 #include <uhd/types/sensors.hpp>
 #include <uhd/types/device_addr.hpp>
 
-#include "usrpcluster.hpp"
+#include "usrpcluster_float.hpp"
 
 void sync_thread(uhd::usrp::multi_usrp::sptr mboard,
                  uhd::time_spec_t time,

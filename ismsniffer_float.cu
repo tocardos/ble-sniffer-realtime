@@ -36,9 +36,9 @@
 #include <uhd/utils/safe_main.hpp>
 #include <uhd/utils/thread.hpp>
 
-#include "usrpcluster.hpp"
+#include "usrpcluster_float.hpp"
 #include "doublebuffer.hpp"
-#include "bleprocessor.h"
+#include "bleprocessor_float.h"
 #include "pcapsaver.h"
 
 //#include <thread>
@@ -49,10 +49,20 @@
 // for profiling
 #include <chrono>
 
-#define SAMP_RATE 40e6
-static const size_t num_rep = 10000;
-//static const size_t num_rep = 4000; // working fine with 16MHz
-//static const size_t num_rep = 9000; // working fine with 18MHz
+// combination of samp_rate and num_rep to avoid overflows,
+// needs to be adapated based on GPU
+// next settings are for GTX 1070
+
+
+// for 40MHz num_rep at 5000 provides no overflow
+//#define SAMP_RATE 40e6
+#if (SAMP_RATE==40000000UL)
+ static const size_t num_rep = 5000;
+ #elif (SAMP_RATE==320000000UL)
+static const size_t num_rep = 4000; // working fine with 16MHz
+#endif
+
+
 //static const size_t num_rep = SAMP_RATE/8e3;
 
 // used for threading packet processing
@@ -72,10 +82,16 @@ std::atomic<size_t> g_success_count(0);
 double total_h2d_time = 0, total_kernel_time = 0;
 double total_d2h_time = 0, total_packet_time = 0;
 size_t timing_samples = 0;
-
+// NEW: Variance tracking
+double min_total_time = 1e9;
+double max_total_time = 0;
+const int HISTORY_SIZE = 1000;
+double time_history[HISTORY_SIZE];
+int history_idx = 0;
 static const double timeout = 3.0;
 
-typedef std::complex<double> iqsamp_t;
+//typedef std::complex<double> iqsamp_t;
+typedef std::complex<float> iqsamp_t;
 
 namespace po = boost::program_options; 
 
@@ -113,7 +129,8 @@ void streaming(uhd::rx_streamer::sptr rxstream,
             std::cerr << "An overflow has occurred" << std::endl;
         }else {
             g_success_count++;
-            std::cout << "Received " << num_rx_samps << " samples" << std::endl;
+            //for debug purposes
+            //std::cout << "Received " << num_rx_samps << " samples" << std::endl;
         }
         
         old_buf_ptr = buf_ptr;
@@ -367,14 +384,19 @@ int UHD_SAFE_MAIN(int argc, char *argv[])
         std::cout << desc << std::endl;
         return ~0;
     }
-
+    //std::string enhanced_args = usrp_args + 
+    //",recv_buff_size=10000000" +  // 100 MB buffer (was ~2-8 MB)
+    //",num_recv_frames=512";
+    // settings num_recv_frames to 512 gets rid of OVERFLOW from ettus b200 mini
+    std::string enhanced_args = "num_recv_frames=512";
+    UsrpCluster usrp(enhanced_args, subdev, sync_request);
     // Create a new USRP cluster
-    UsrpCluster usrp(usrp_args, subdev, sync_request);
+    //UsrpCluster usrp(usrp_args, subdev, sync_request);
     const size_t num_mboards = usrp.get_num_mboards();
     std::cout << boost::format("\nDetected %u mboards\n") % num_mboards
               << std::endl;
 
-    const double sampling_rate = SAMP_RATE;
+    const double sampling_rate =(double) SAMP_RATE;
 
     // SDR front-end configuration.
     usrp.set_chan(channel_string);
@@ -384,7 +406,11 @@ int UHD_SAFE_MAIN(int argc, char *argv[])
     usrp.set_ant(antenna);
 
     // Initialize receving streamer
-    const std::string cpu_fmt = "fc64"; // cpu: double
+    //const std::string cpu_fmt = "fc64"; // cpu: double
+    const std::string cpu_fmt = "fc32"; // cpu: float (CHANGED from fc64)
+    // compression over the wire reduces significantly the ble detection
+
+    //const std::string otw_fmt = "sc8";   // Reduce over-the-wire to 8-bit
     const std::string otw_fmt = "sc16"; // otw: int16
     usrp.init_rx_streamer(cpu_fmt, otw_fmt);
 
@@ -524,6 +550,11 @@ int UHD_SAFE_MAIN(int argc, char *argv[])
         total_d2h_time += d2h_ms;
         total_packet_time += packet_ms;
         timing_samples++;
+
+        // NEW: Track min/max and history
+        if (total_ms < min_total_time) min_total_time = total_ms;
+        if (total_ms > max_total_time) max_total_time = total_ms;
+        time_history[history_idx++ % HISTORY_SIZE] = total_ms;
         // Display how many packets have been decoded.
         if (debug) {
             for (int k = 0; k < num_mboards*DECFACTOR; k++) 
@@ -531,16 +562,53 @@ int UHD_SAFE_MAIN(int argc, char *argv[])
             std::cout << std::endl;
         }
         if (timing_samples % 100 == 0) {
-        std::cout << boost::format(
-            "Timing (avg ms): H2D=%.2f Kernel=%.2f D2H=%.2f Packet=%.2f Total=%.2f | Available=%.2f"
-        ) % (total_h2d_time/timing_samples)
-          % (total_kernel_time/timing_samples) 
-          % (total_d2h_time/timing_samples)
-          % (total_packet_time/timing_samples)
-          % ((total_h2d_time+total_kernel_time+total_d2h_time+total_packet_time)/timing_samples)
-          % ((nsamps_per_mboard / SAMP_RATE) * 1000.0)  // Time available before buffer fills
-        << std::endl;
+            // Calculate variance
+            int n = (history_idx < HISTORY_SIZE) ? history_idx : HISTORY_SIZE;
+            double sum = 0, sum_sq = 0;
+            for (int i = 0; i < n; i++) {
+                sum += time_history[i];
+                sum_sq += time_history[i] * time_history[i];
+            }
+            double mean = sum / n;
+            double variance = (sum_sq / n) - (mean * mean);
+            double stddev = std::sqrt(variance);
         
+            double available_ms = (nsamps_per_mboard / (double)SAMP_RATE) * 1000.0;
+            std::cout << boost::format(
+                "Timing (avg ms): H2D=%.2f Kernel=%.2f D2H=%.2f Packet=%.2f Total=%.2f | Available=%.2f"
+                ) % (total_h2d_time/timing_samples)
+                % (total_kernel_time/timing_samples) 
+                % (total_d2h_time/timing_samples)
+                % (total_packet_time/timing_samples)
+                % ((total_h2d_time+total_kernel_time+total_d2h_time+total_packet_time)/timing_samples)
+                % ((nsamps_per_mboard /(double) SAMP_RATE) * 1000.0)  // Time available before buffer fills
+                << std::endl;
+            std::cout << boost::format(
+                "Timing: Avg=%.2f Min=%.2f Max=%.2f StdDev=%.2f | Available=%.2f Margin=%.2f%%"
+                ) % mean 
+                % min_total_time 
+                % max_total_time 
+                % stddev
+                % available_ms
+                % (((available_ms - mean) / available_ms) * 100.0)
+                << std::endl;
+            // Calculate how much headroom you need
+            double needed_margin = (max_total_time - mean) / mean * 100.0;
+            if (needed_margin > ((available_ms - mean) / mean * 100.0)) {
+                std::cout << "RECOMMENDATION: Need " << needed_margin 
+                      << "% headroom for variance, only have "
+                      << (((available_ms - mean) / mean) * 100.0) << "%" << std::endl;
+                }
+            min_total_time = 1e9;
+            max_total_time = 0;
+            history_idx = 0;
+            // Reset timing stats
+            total_h2d_time = 0;
+            total_kernel_time = 0;
+            total_d2h_time = 0;
+            total_packet_time = 0;
+            timing_samples = 0;
+
         //std::cout << boost::format("Overflow: %d Success: %d Ratio: %.2f%%") 
         //    % overflow_count % success_count 
         //    % (100.0 * overflow_count / (overflow_count + success_count))

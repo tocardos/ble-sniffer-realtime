@@ -111,7 +111,8 @@ void DoubleBuffer<T>::end_reading()
     auto state = m_state.load(std::memory_order_relaxed);
     std::uint32_t sub = (0x10 >> (state & 1)) | 0x2;
     state = m_state.fetch_sub(sub, std::memory_order_relaxed) - sub;
-    if ((state & 0x6) == 0 && (state & (0x8 << (state & 1))) == 1) {
+    if ((state & 0x6) == 0 && (state & (0x8 << (state & 1))) != 0) {
+    //if ((state & 0x6) == 0 && (state & (0x8 << (state & 1))) == 1) {
         // We were the last ones accessing the data when releasing out cell.
         // This means we should swap, but only if the producer is working and
         // has not swapped yet (and has not set the flag we just reset - that

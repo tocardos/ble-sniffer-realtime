@@ -72,30 +72,91 @@ include_directories(
 link_directories(${Boost_LIBRARY_DIRS} "/usr/lib/x86_64-linux-gnu/libpcap.so")
 
 
-### Make the executable #######################################################
-file( GLOB  cu  *.cu)
-cuda_add_executable(blesniffer usrpcluster.cpp pcapsaver.cpp ${cu})
-
+### Make the executables ######################################################
 SET(CMAKE_BUILD_TYPE "Release")
 
-# Shared library case: All we need to do is link against the library, and
-# anything else we need (in this case, some Boost libraries):
+# Common source files (non-CUDA, shared between both builds)
+set(COMMON_SOURCES
+    usrpcluster.cpp
+    pcapsaver.cpp
+)
+
+### Build 1: Original double precision version (blesniffer) ###################
+message(STATUS "Configuring double precision build: blesniffer")
+
+# Find all original .cu files (not the _float.cu versions)
+file(GLOB CU_ORIGINAL *.cu)
+# Exclude _float.cu files
+list(FILTER CU_ORIGINAL EXCLUDE REGEX ".*_float\\.cu$")
+
+cuda_add_executable(blesniffer 
+    ${COMMON_SOURCES}
+    ${CU_ORIGINAL}
+)
+
+# Link libraries for original version
 if(NOT UHD_USE_STATIC_LIBS)
-    message(STATUS "Linking against shared UHD library.")
+    message(STATUS "Linking blesniffer against shared UHD library.")
     target_link_libraries(blesniffer ${UHD_LIBRARIES} ${Boost_LIBRARIES} "pcap")
-# Shared library case: All we need to do is link against the library, and
-# anything else we need (in this case, some Boost libraries):
 else(NOT UHD_USE_STATIC_LIBS)
-    message(STATUS "Linking against static UHD library.")
+    message(STATUS "Linking blesniffer against static UHD library.")
     target_link_libraries(blesniffer
-        # We could use ${UHD_LIBRARIES}, but linking requires some extra flags,
-        # so we use this convenience variable provided to us
         ${UHD_STATIC_LIB_LINK_FLAG}
-        # Also, when linking statically, we need to pull in all the deps for
-        # UHD as well, because the dependencies don't get resolved automatically
         ${UHD_STATIC_LIB_DEPS}
     )
 endif(NOT UHD_USE_STATIC_LIBS)
+
+
+### Build 2: Float precision version (blesniffer_float) #######################
+message(STATUS "Configuring single precision build: blesniffer_float")
+
+# Find all _float.cu files
+file(GLOB CU_FLOAT *_float.cu)
+
+# Find all _float.c files (if any)
+file(GLOB C_FLOAT *_float.c)
+
+# Check if float versions exist
+if(CU_FLOAT OR C_FLOAT)
+    cuda_add_executable(blesniffer_float 
+        ${COMMON_SOURCES}
+        ${CU_FLOAT}
+        ${C_FLOAT}
+    )
+
+    # Link libraries for float version
+    if(NOT UHD_USE_STATIC_LIBS)
+        message(STATUS "Linking blesniffer_float against shared UHD library.")
+        target_link_libraries(blesniffer_float ${UHD_LIBRARIES} ${Boost_LIBRARIES} "pcap")
+    else(NOT UHD_USE_STATIC_LIBS)
+        message(STATUS "Linking blesniffer_float against static UHD library.")
+        target_link_libraries(blesniffer_float
+            ${UHD_STATIC_LIB_LINK_FLAG}
+            ${UHD_STATIC_LIB_DEPS}
+        )
+    endif(NOT UHD_USE_STATIC_LIBS)
+    
+    message(STATUS "Float precision build configured successfully")
+else()
+    message(WARNING "No *_float.cu or *_float.c files found. Skipping blesniffer_float build.")
+endif()
+
+
+### Print summary #############################################################
+message(STATUS "")
+message(STATUS "Build configuration summary:")
+message(STATUS "  Double precision executable: blesniffer")
+if(CU_FLOAT OR C_FLOAT)
+    message(STATUS "  Single precision executable: blesniffer_float")
+endif()
+message(STATUS "  Original .cu files: ${CU_ORIGINAL}")
+if(CU_FLOAT)
+    message(STATUS "  Float .cu files: ${CU_FLOAT}")
+endif()
+if(C_FLOAT)
+    message(STATUS "  Float .c files: ${C_FLOAT}")
+endif()
+message(STATUS "")
 
 ### Once it's built... ########################################################
 # Here, you would have commands to install your program.

@@ -10,8 +10,8 @@
 
 #include <uhd/usrp/multi_usrp.hpp>
 
-typedef std::complex<double> iqsamp_t;
-//typedef std::complex<float> iqsamp_t;  // Changed from double to float
+//typedef std::complex<double> iqsamp_t;
+typedef std::complex<float> iqsamp_t;  // Changed from double to float
 
 // UsrpCluster is designed to handle multiple multi_usrp objects.
 // This is useful if one wants to overcome the limitation of having at most one
